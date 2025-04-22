@@ -15,6 +15,9 @@ if not GOOGLE_API_KEY:
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
+model = genai.GenerativeModel('models/learnlm-1.5-pro-experimental')
+
+
 # --- Optimization Type Detection ---
 OPT_TYPES = {
     "linear_programming": False,
@@ -282,47 +285,85 @@ def modify_lpp(session_lpp, user_input):
             return None, "Failed to parse modified LPP."
     except Exception as e:
         return None, f"Error parsing modified LPP: {e}"
-# Add the ask_user_to_fill_missing_values function
-def ask_user_to_fill_missing_values(lpp_dict):
-    st.subheader("🛠 Fill in Missing Values Detected in the LPP")
+
+
+
+
+# LLM prompt generator (mocking GPT for now — integrate your own model API here)
+def generate_prompt(missing_type, variable_name=None, constraint_name=None):
+    if missing_type == "bound_lower":
+        return model.generate_content(f"What should be the lower bound for the variable '{variable_name}'?")
+    elif missing_type == "bound_upper":
+        return model.generate_content(f"What should be the upper bound for the variable '{variable_name}'?")
+    elif missing_type == "A_eq":
+        return model.generate_content(f"What is the coefficient of variable '{variable_name}' in constraint '{constraint_name}'?")
+    elif missing_type == "b_eq":
+        return model.generate_content(f"What is the right-hand side value for constraint '{constraint_name}'?")
+    else:
+        return model.generate_content(f"Please enter a value.")
+
+def ask_user_to_fill_missing_values(modified_lpp):
+    st.subheader("🛠 Help Complete the Optimization Problem")
+
     updated = False
+    var_names = modified_lpp.get("variable_names", [])
+    con_names = modified_lpp.get("constraint_names", [])
 
     # Fill missing bounds
-    for i, bound in enumerate(lpp_dict["bounds"]):
+    for i, bound in enumerate(modified_lpp["bounds"]):
         if bound is None or any(b is None for b in bound):
             lower, upper = bound if bound is not None else (None, None)
-            var_name = lpp_dict["variable_names"][i] if lpp_dict.get("variable_names") else f"x{i+1}"
-            st.markdown(f"**Variable `{var_name}` bounds missing:**")
+            var_name = var_names[i] if i < len(var_names) else f"x{i+1}"
 
-            lower_val = st.number_input(f"Lower bound for {var_name}", value=0.0 if lower is None else lower, key=f"lower_{i}")
-            upper_val = st.number_input(f"Upper bound for {var_name}", value=None if upper is None else upper, key=f"upper_{i}")
-            lpp_dict["bounds"][i] = (lower_val, upper_val if upper_val != 0.0 else None)
+            if lower is None:
+                prompt = generate_prompt("bound_lower", variable_name=var_name)
+                st.markdown(f"🔽 **{prompt}**")
+                lower_val = st.number_input(f"Lower bound for {var_name}", value=0.0, key=f"lower_{i}")
+            else:
+                lower_val = lower
+
+            if upper is None:
+                prompt = generate_prompt("bound_upper", variable_name=var_name)
+                st.markdown(f"🔼 **{prompt}**")
+                upper_val = st.number_input(f"Upper bound for {var_name}", value=0.0, key=f"upper_{i}")
+            else:
+                upper_val = upper
+
+            modified_lpp["bounds"][i] = (lower_val, upper_val if upper_val != 0.0 else None)
             updated = True
 
-    # Fill missing A_eq / b_eq
-    if lpp_dict.get("A_eq") is None:
-        st.markdown("**Equality matrix `A_eq` is missing.**")
-        num_vars = len(lpp_dict["c_max"]) if lpp_dict.get("c_max") else len(lpp_dict["c_min"])
+    # Fill missing A_eq
+    if modified_lpp.get("A_eq") is None:
+        st.markdown("➕ **Missing equality constraint matrix (A_eq). Please fill in the coefficients.**")
+        num_vars = len(modified_lpp.get("c_max") or modified_lpp.get("c_min") or [])
         num_eq = st.number_input("How many equality constraints?", min_value=1, max_value=10, value=1, key="eq_rows")
-        lpp_dict["A_eq"] = []
+        modified_lpp["A_eq"] = []
+
         for i in range(num_eq):
             row = []
-            st.markdown(f"Enter coefficients for Equality Constraint {i+1}:")
+            con_name = con_names[i] if i < len(con_names) else f"Constraint {i+1}"
             for j in range(num_vars):
-                val = st.number_input(f"A_eq[{i}][{j}]", value=0.0, key=f"aeq_{i}_{j}")
+                var_name = var_names[j] if j < len(var_names) else f"x{j+1}"
+                prompt = generate_prompt("A_eq", variable_name=var_name, constraint_name=con_name)
+                st.markdown(f"📌 **{prompt}**")
+                val = st.number_input(f"{con_name} - Coefficient for {var_name}", value=0.0, key=f"aeq_{i}_{j}")
                 row.append(val)
-            lpp_dict["A_eq"].append(row)
+            modified_lpp["A_eq"].append(row)
         updated = True
 
-    if lpp_dict.get("b_eq") is None and lpp_dict.get("A_eq"):
-        st.markdown("**Right-hand side `b_eq` is missing.**")
-        lpp_dict["b_eq"] = []
-        for i in range(len(lpp_dict["A_eq"])):
-            val = st.number_input(f"b_eq[{i}]", value=0.0, key=f"beq_{i}")
-            lpp_dict["b_eq"].append(val)
+    # Fill missing b_eq
+    if modified_lpp.get("b_eq") is None and modified_lpp.get("A_eq"):
+        st.markdown("➡️ **Missing RHS values (b_eq). Please provide the constants.**")
+        modified_lpp["b_eq"] = []
+        for i in range(len(modified_lpp["A_eq"])):
+            con_name = con_names[i] if i < len(con_names) else f"Constraint {i+1}"
+            prompt = generate_prompt("b_eq", constraint_name=con_name)
+            st.markdown(f"🧾 **{prompt}**")
+            val = st.number_input(f"RHS for {con_name}", value=0.0, key=f"beq_{i}")
+            modified_lpp["b_eq"].append(val)
         updated = True
 
-    return lpp_dict if updated else None
+    return modified_lpp if updated else None
 
 
 
@@ -373,6 +414,7 @@ if user_input:
 #####################
                 # Check if any missing values need to be filled
                 modified_lpp = ask_user_to_fill_missing_values(modified_lpp)
+
                 
                 if modified_lpp:  # If there are updates, solve the LPP
                     err2, opt_val, opt_vars = solve_lpp(modified_lpp)
