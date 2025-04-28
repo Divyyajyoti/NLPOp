@@ -8,6 +8,7 @@ from scipy.optimize import linprog, minimize, linear_sum_assignment
 from itertools import permutations
 import os
 import re
+import numpy as np
 
 # --- Configure Google GenAI ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -287,12 +288,12 @@ def format_solution(opt_val, opt_vars, objective, lpp_dict):
 
 
 
-def modify_lpp(session_lpp, user_input):
+def modify_lpp(session_problem, user_input):
     model = genai.GenerativeModel('models/learnlm-1.5-pro-experimental')
     prompt = f"""
     You are assisting in modifying a Linear Programming Problem (LPP). Here is the existing LPP in dictionary format:
 
-    {session_lpp}
+    {session_problem}
 
     Based on this user instruction:
     "{user_input}"
@@ -765,12 +766,12 @@ def modify_combinatorial(session_com, user_input):
 
 
 
-def classify_user_input(user_input, session_lpp=None):
+def classify_user_input(user_input, session_problem=None):
     prompt = f"""
     You are an intelligent assistant that classifies user instructions in the context of optimization problems.
 
     Given the following current problem description (if any):
-    \"\"\"{session_lpp or 'None'}\"\"\"
+    \"\"\"{session_problem or 'None'}\"\"\"
 
     And the user's latest input:
     \"\"\"{user_input}\"\"\"
@@ -791,7 +792,7 @@ def classify_user_input(user_input, session_lpp=None):
         if "new" in answer:
             return None
         elif "followup" in answer:
-            return st.session_state.session_lpp
+            return st.session_state.session_problem
         else:
             return "unknown"
     except Exception as e:
@@ -807,25 +808,25 @@ st.markdown("Describe your problem in natural language and let AI extract, solve
 
 if 'history' not in st.session_state:
     st.session_state.history = []
-if 'session_lpp' not in st.session_state:
-    st.session_state.session_lpp = None
 if 'session_problem' not in st.session_state:
-    st.session_state.session_problem = None  # Initialize problem_type
+    st.session_state.session_problem = None
+if 'problem_type' not in st.session_state:
+    st.session_state.problem_type = None  # Initialize problem_type
 
 
 user_input = st.chat_input("Enter a new LPP description or a follow-up modification...")
 
 if user_input:
-    st.session_state.session_lpp = classify_user_input(user_input, st.session_state.session_lpp)
+    st.session_state.problem_type = classify_user_input(user_input, st.session_state.session_problem)
     with st.spinner("Processing..."):
-      if st.session_state.session_lpp is None:
+      if st.session_state.session_problem is None:
         opt_types = detect_optimization_type(user_input)
         if opt_types.get("linear_programming", False):
-          st.session_state.session_problem = "linear"
+          st.session_state.problem_type = "linear"
           lpp_data, error = extract_lpp_from_text(user_input)
-    #    if st.session_state.session_lpp is None:
+    #    if st.session_state.session_problem is None:
 
-# or not all(elem in lpp_data.get ("variable_names") for elem in st.session_state.session_lpp.get ("variable_names")):
+# or not all(elem in lpp_data.get ("variable_names") for elem in st.session_state.session_problem.get ("variable_names")):
           st.markdown ('New lpp detected')
     #        modified_lpp, error = extract_lpp_from_text(user_input)
           if error:
@@ -842,7 +843,7 @@ if user_input:
                 else:
                     formatted = format_solution(opt_val, opt_vars, lpp_data.get("objective"), lpp_data)
                     human_response = humanize_response(formatted)
-                    st.session_state.session_lpp = lpp_data
+                    st.session_state.session_problem = lpp_data
                     st.session_state.history.append(("user", user_input))
                     st.session_state.history.append(("assistant", human_response))
                     true_types = [key.replace("_", " ").title() for key, val in opt_types.items() if val]
@@ -853,7 +854,7 @@ if user_input:
 
 
         elif opt_types.get("nonlinear_programming", False):
-                st.session_state.session_problem = "nonlinear"
+                st.session_state.problem_type = "nonlinear"
                 nlp_data, error = extract_nlp_components(user_input)
                 if error:
                     st.session_state.history.append(("user", user_input))
@@ -868,7 +869,7 @@ if user_input:
                         nlp_data['objective_function_original'] = re.search(r"lambda x: (.+)", nlp_data.get('objective_function', ''))[1] if nlp_data.get('objective_function') else "Objective Function"
                         formatted = format_nlp_solution(opt_val, opt_vars, nlp_data.get("objective_type", "minimize"), nlp_data)
                         human_response = humanize_response(formatted, "non-linear programming")
-                        st.session_state.session_lpp = nlp_data
+                        st.session_state.session_problem = nlp_data
                         st.session_state.history.append(("user", user_input))
                         st.session_state.history.append(("assistant", human_response))
                         true_types = [key.replace("_", " ").title() for key, val in opt_types.items() if val]
@@ -881,11 +882,11 @@ if user_input:
         elif opt_types.get("combinatorial_optimization", False):
                 # Use AI to extract the problem type and data
                 combinatorial_data = extract_combinatorial_data(user_input)
-                st.session_state.session_lpp = combinatorial_data
+                st.session_state.session_problem = combinatorial_data
 
 
                 if combinatorial_data["problem_type"] == "tsp":
-                    st.session_state.session_problem = "combinatorial_tsp"
+                    st.session_state.problem_type = "combinatorial_tsp"
                     distance_matrix = np.array(combinatorial_data["data"].get("distance_matrix", []))
                     result = solve_tsp(distance_matrix)
 
@@ -901,7 +902,7 @@ if user_input:
                         st.session_state.history.append(("assistant", human_response))
 
                 elif combinatorial_data["problem_type"] == "assignment":
-                    st.session_state.session_problem = "combinatorial_assignment"
+                    st.session_state.problem_type = "combinatorial_assignment"
                     cost_matrix = np.array(combinatorial_data["data"].get("cost_matrix", []))
                     result = solve_assignment_problem(cost_matrix)
 
@@ -917,7 +918,7 @@ if user_input:
                         st.session_state.history.append(("assistant", human_response))
 
                 elif combinatorial_data["problem_type"] == "knapsack":
-                    st.session_state.session_problem = "combinatorial_knapsack"
+                    st.session_state.problem_type = "combinatorial_knapsack"
                     values = combinatorial_data["data"].get("values", [])
                     weights = combinatorial_data["data"].get("weights", [])
                     capacity = combinatorial_data["data"].get("capacity")
@@ -963,8 +964,8 @@ if user_input:
 
 ##################################
       else:
-            if st.session_state.session_problem == "linear":
-                modified_lpp, error = modify_lpp(st.session_state.session_lpp, user_input)
+            if st.session_state.problem_type == "linear":
+                modified_lpp, error = modify_lpp(st.session_state.session_problem, user_input)
                 if error:
                     st.session_state.history.append(("user", user_input))
                     st.session_state.history.append(("assistant", f"❌ {error}"))
@@ -976,11 +977,11 @@ if user_input:
                     else:
                         formatted = format_solution(opt_val, opt_vars, modified_lpp.get("objective"), modified_lpp)
                         human_response = humanize_response(formatted, "linear programming")
-                        st.session_state.session_lpp = modified_lpp
+                        st.session_state.session_problem = modified_lpp
                         st.session_state.history.append(("user", user_input))
                         st.session_state.history.append(("assistant", human_response))
-            elif st.session_state.session_problem == "nonlinear":
-                modified_nlp, error = modify_nlp(st.session_state.session_lpp, user_input)
+            elif st.session_state.problem_type == "nonlinear":
+                modified_nlp, error = modify_nlp(st.session_state.session_problem, user_input)
                 if error:
                     st.session_state.history.append(("user", user_input))
                     st.session_state.history.append(("assistant", f"❌ {error}"))
@@ -992,7 +993,7 @@ if user_input:
                     else:
                         formatted = format_nlp_solution(opt_val, opt_vars, modified_nlp.get("objective_type", "minimize"), modified_nlp)
                         human_response = humanize_response(formatted, "non-linear programming")
-                        st.session_state.session_lpp = modified_nlp
+                        st.session_state.session_problem = modified_nlp
                         st.session_state.history.append(("user", user_input))
                         st.session_state.history.append(("assistant", human_response))
  
@@ -1000,7 +1001,7 @@ if user_input:
 
 
             elif st.session_state.problem_type == "knapsack":
-                modified_knapsack, error = modify_knapsack(st.session_state.session_problem, user_input)
+                modified_knapsack, error = modify_knapsack(st.session_state.problem_type, user_input)
 
                 if error or modified_knapsack is None:
                     st.session_state.history.append(("user", user_input))
@@ -1013,7 +1014,7 @@ if user_input:
                     optimal_value, chosen_items = solve_knapsack(values, weights, capacity)
                     formatted_solution = f"Optimal Knapsack Value: {optimal_value}\nChosen Items: {chosen_items}"
                     human_response = humanize_response(formatted_solution, "knapsack problem")
-                    st.session_state.session_problem = modified_knapsack
+                    st.session_state.problem_type = modified_knapsack
                     st.session_state.history.append(("user", user_input))
                     st.session_state.history.append(("assistant", human_response))
 
@@ -1022,24 +1023,52 @@ if user_input:
 
 
             elif st.session_state.problem_type == "assignment":
-                cost_matrix = np.array(combinatorial_data["data"].get("cost_matrix", []))
-                modified_assignment = modify_assignment(st.session_state.session_problem, user_input)
-                if error:
+                cost_matrix = np.array(st.session_state.session_problem["data"].get("cost_matrix", []))
+                modified_assignment, error = modify_combinatorial(st.session_state.session_problem, user_input)
+
+                if error or modified_assignment is None:
                     st.session_state.history.append(("user", user_input))
                     st.session_state.history.append(("assistant", f"❌ {error}"))
                 else:
+                    cost_matrix = np.array(modified_assignment["data"].get("cost_matrix", []))
                     optimal_cost, assignment = solve_assignment_problem(cost_matrix)
-                    if err2:
+
+                    if isinstance(optimal_cost, str):
                         st.session_state.history.append(("user", user_input))
-                        st.session_state.history.append(("assistant", f"❌ {err2}"))
+                        st.session_state.history.append(("assistant", f"❌ {optimal_cost}"))
                     else:
-                        formatted = format_assignment_solution(opt_val, opt_vars, modified_knapsack.get("objective_type", "minimize"), modified_knapsack)
-                        human_response = humanize_response(formatted, "knapsack problem")
+                        formatted = format_assignment_solution(optimal_cost, assignment)
+                        human_response = humanize_response(formatted, "assignment problem")
                         st.session_state.session_problem = modified_assignment
                         st.session_state.history.append(("user", user_input))
                         st.session_state.history.append(("assistant", human_response))
 
-            elif combinatorial_data["problem_type"] == "set_covering":
+
+            elif st.session_state.problem_type == "tsp":
+                distance_matrix = np.array(st.session_state.session_problem["data"].get("distance_matrix", []))
+                modified_tsp, error = modify_combinatorial(st.session_state.session_problem, user_input)
+
+                if error or modified_tsp is None:
+                    st.session_state.history.append(("user", user_input))
+                    st.session_state.history.append(("assistant", f"❌ {error}"))
+                else:
+                    distance_matrix = np.array(modified_tsp["data"].get("distance_matrix", []))
+                    err2, path = solve_tsp(distance_matrix)
+
+                    if isinstance(err2, str):
+                        st.session_state.history.append(("user", user_input))
+                        st.session_state.history.append(("assistant", f"❌ {err2}"))
+                    else:
+                        formatted = format_tsp_solution(path, err2)
+                        human_response = humanize_response(formatted, "traveling salesman problem")
+                        st.session_state.session_problem = modified_tsp
+                        st.session_state.history.append(("user", user_input))
+                        st.session_state.history.append(("assistant", human_response))
+
+            
+
+
+            elif st.session_state.problem_type == "set_covering":
                 sets = combinatorial_data["data"].get("sets", [])
                 universe = combinatorial_data["data"].get("universe", [])
 
