@@ -924,6 +924,179 @@ if 'problem_type' not in st.session_state:
     st.session_state.problem_type = None  # Initialize problem_type
 
 
+
+
+# --- 📥 Excel File Upload and Solve Section (Extended to Smart Detection) ---
+st.subheader("📄 Optional: Upload an Excel File for Problem Detection")
+uploaded_file = st.file_uploader("Upload an Excel file (.xlsx)", type=["xlsx"])
+
+if st.session_state.get("excel_handled"):
+    if st.button("🔄 Clear Uploaded Excel and Start New Problem"):
+        del st.session_state.excel_handled
+        del st.session_state.session_problem
+        del st.session_state.problem_type
+        st.experimental_rerun()
+
+
+if uploaded_file and 'excel_handled' not in st.session_state:
+    try:
+        df_dict = pd.read_excel(uploaded_file, sheet_name=None)  # Read all sheets
+        st.success("✅ Excel file uploaded successfully.")
+
+        # --- Convert Excel to text for AI detection ---
+        def describe_excel_for_ai(df_dict):
+            content = ""
+            for sheet_name, df in df_dict.items():
+                content += f"Sheet: {sheet_name}\n"
+                content += df.to_string(index=False)
+                content += "\n\n"
+            return content
+
+        excel_text = describe_excel_for_ai(df_dict)
+
+        # --- Detect optimization type ---
+        opt_types = detect_optimization_type(excel_text)
+
+        if opt_types.get("linear_programming", False):
+            lpp_data, error = extract_lpp_from_text(excel_text)
+            if error:
+                st.error(f"❌ {error}")
+            else:
+                err2, opt_val, opt_vars = solve_lpp(lpp_data)
+                if err2:
+                    st.error(f"❌ {err2}")
+                else:
+                    formatted = format_solution(opt_val, opt_vars, lpp_data.get("objective"), lpp_data)
+                    human_response = humanize_response(formatted)
+
+                    st.session_state.session_problem = lpp_data
+                    st.session_state.problem_type = "linear"
+                    st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as Linear Programming!**"))
+                    st.session_state.history.append(("assistant", human_response))
+
+        elif opt_types.get("nonlinear_programming", False):
+            nlp_data, error = extract_nlp_components(excel_text)
+            if error:
+                st.error(f"❌ {error}")
+            else:
+                err2, opt_val, opt_vars = solve_nlp(nlp_data)
+                if err2:
+                    st.error(f"❌ {err2}")
+                else:
+                    nlp_data['objective_function_original'] = re.search(r"lambda x: (.+)", nlp_data.get('objective_function', ''))[1] if nlp_data.get('objective_function') else "Objective Function"
+                    formatted = format_nlp_solution(opt_val, opt_vars, nlp_data.get("objective_type", "minimize"), nlp_data)
+                    human_response = humanize_response(formatted, "non-linear programming")
+
+                    st.session_state.session_problem = nlp_data
+                    st.session_state.problem_type = "nonlinear"
+                    st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as Nonlinear Programming!**"))
+                    st.session_state.history.append(("assistant", human_response))
+
+
+        elif opt_types.get("stochastic_programming", False):
+            stochastic_dict = extract_stochastic_components(excel_text)
+            if "error" in stochastic_dict:
+                st.error(f"❌ {stochastic_dict['error']}")
+            else:
+                err2, optimal_value, optimal_x, optimal_ys = solve_two_stage_stochastic(stochastic_dict)
+                if err2:
+                    st.error(f"❌ {err2}")
+                else:
+                    # Format the solution
+                    var_names = stochastic_dict["first_stage_variables"]
+                    second_var_names = stochastic_dict["second_stage_variables"]
+                    num_scenarios = len(stochastic_dict["scenarios"])
+
+                    var_details = "\n".join([f"  - {name}: {val:.2f}" for name, val in zip(var_names, optimal_x)])
+
+                    second_stage_details = ""
+                    for i in range(num_scenarios):
+                        scen_name = stochastic_dict["scenarios"][i]["name"]
+                        second_decisions = optimal_ys[i]
+                        decisions_text = ", ".join([f"{var}: {val:.2f}" for var, val in zip(second_var_names, second_decisions)])
+                        second_stage_details += f"\n**Scenario {i+1} ({scen_name}):** {decisions_text}"
+
+                    summary = f"**Optimal Expected Value:** {optimal_value:.2f}\n\n**First-Stage Decisions:**\n{var_details}\n\n**Second-Stage Decisions:**{second_stage_details}"
+                    human_response = humanize_response(summary, "two-stage stochastic programming")
+
+                    st.session_state.session_problem = stochastic_dict
+                    st.session_state.problem_type = "stochastic_programming"
+                    st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as Stochastic Programming!**"))
+                    st.session_state.history.append(("assistant", human_response))
+
+
+
+        else:
+            # --- Try detecting combinatorial optimization ---
+            combinatorial_data = extract_combinatorial_data(excel_text)
+
+            if combinatorial_data["problem_type"] == "tsp":
+                st.session_state.problem_type = "combinatorial_tsp"
+                distance_matrix = np.array(combinatorial_data["data"].get("distance_matrix", []))
+                result = solve_tsp(distance_matrix)
+                if isinstance(result, str):
+                    st.error(f"❌ {result}")
+                else:
+                    distance, path = result
+                    formatted = format_tsp_solution(distance, path)
+                    human_response = humanize_response(formatted, "traveling salesman problem")
+                    st.session_state.session_problem = combinatorial_data
+                    st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as TSP!**"))
+                    st.session_state.history.append(("assistant", human_response))
+
+            elif combinatorial_data["problem_type"] == "assignment":
+                st.session_state.problem_type = "combinatorial_assignment"
+                cost_matrix = np.array(combinatorial_data["data"].get("cost_matrix", []))
+                result = solve_assignment_problem(cost_matrix)
+                if isinstance(result, str):
+                    st.error(f"❌ {result}")
+                else:
+                    cost, assignment = result
+                    formatted = format_assignment_solution(cost, assignment)
+                    human_response = humanize_response(formatted, "assignment problem")
+                    st.session_state.session_problem = combinatorial_data
+                    st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as Assignment Problem!**"))
+                    st.session_state.history.append(("assistant", human_response))
+
+            elif combinatorial_data["problem_type"] == "knapsack":
+                st.session_state.problem_type = "combinatorial_knapsack"
+                values = combinatorial_data["data"].get("values", [])
+                weights = combinatorial_data["data"].get("weights", [])
+                capacity = combinatorial_data["data"].get("capacity")
+                optimal_value, chosen_items = solve_knapsack(values, weights, capacity)
+                formatted_solution = f"Optimal Knapsack Value: {optimal_value}\nChosen Items: {chosen_items}"
+                human_response = humanize_response(formatted_solution, "knapsack problem")
+                st.session_state.session_problem = combinatorial_data
+                st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as Knapsack Problem!**"))
+                st.session_state.history.append(("assistant", human_response))
+
+            elif combinatorial_data["problem_type"] == "set_covering":
+                st.session_state.problem_type = "set_covering"
+                sets = combinatorial_data["data"].get("sets", [])
+                universe = combinatorial_data["data"].get("universe", [])
+                result = solve_set_covering(sets, universe)
+                if isinstance(result, str):
+                    st.error(f"❌ {result}")
+                else:
+                    cover_indices, cost = result
+                    formatted = format_set_covering_solution(cover_indices, cost, sets)
+                    human_response = humanize_response(formatted, "set covering problem")
+                    st.session_state.session_problem = combinatorial_data
+                    st.session_state.history.append(("assistant", "📄 **Excel file loaded and processed as Set Covering Problem!**"))
+                    st.session_state.history.append(("assistant", human_response))
+
+            else:
+                st.warning("⚠️ Uploaded Excel could not be classified as a supported problem.")
+
+        st.session_state.excel_handled = True
+
+    except Exception as e:
+        st.error(f"❌ Error processing Excel file: {e}")
+
+
+
+
+
 user_input = st.chat_input("Enter a new LPP description or a follow-up modification...")
 
 if user_input:
