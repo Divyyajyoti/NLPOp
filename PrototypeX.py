@@ -935,7 +935,7 @@ if st.session_state.get("excel_handled"):
         del st.session_state.excel_handled
         del st.session_state.session_problem
         del st.session_state.problem_type
-        st.experimental_rerun()
+        #st.experimental_rerun()
 
 
 if uploaded_file and 'excel_handled' not in st.session_state:
@@ -1217,6 +1217,7 @@ if user_input:
                         st.session_state.history.append(("assistant", f"❌ Error solving knapsack problem: {e}"))
 
                 elif combinatorial_data["problem_type"] == "set_covering":
+                    st.session_state.problem_type = "set_covering"
                     sets = combinatorial_data["data"].get("sets", [])
                     universe = combinatorial_data["data"].get("universe", [])
 
@@ -1320,7 +1321,7 @@ if user_input:
 
 
 
-            elif st.session_state.problem_type == "knapsack":
+            elif st.session_state.problem_type == "combinatorial_knapsack":
                 modified_knapsack, error = modify_knapsack(st.session_state.session_problem, user_input)
 
                 if error or modified_knapsack is None:
@@ -1342,7 +1343,7 @@ if user_input:
 
 
 
-            elif st.session_state.problem_type == "assignment":
+            elif st.session_state.problem_type == "combinatorial_assignment":
                 cost_matrix = np.array(st.session_state.session_problem["data"].get("cost_matrix", []))
                 modified_assignment, error = modify_combinatorial(st.session_state.session_problem, user_input)
 
@@ -1364,7 +1365,7 @@ if user_input:
                         st.session_state.history.append(("assistant", human_response))
 
 
-            elif st.session_state.problem_type == "tsp":
+            elif st.session_state.problem_type == "combinatorial_tsp":
                 distance_matrix = np.array(st.session_state.session_problem["data"].get("distance_matrix", []))
                 modified_tsp, error = modify_combinatorial(st.session_state.session_problem, user_input)
 
