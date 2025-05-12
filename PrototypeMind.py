@@ -23,6 +23,8 @@ if not GOOGLE_API_KEY:
     st.error("Google API key not found. Set it as an environment variable.")
     st.stop()
 
+#GOOGLE_API_KEY = "AIzaSyCHjm7TPH3rEP94mhXpXaOoYaz68TpPGc8"
+
 genai.configure(api_key=GOOGLE_API_KEY)
 
 model = genai.GenerativeModel('models/learnlm-1.5-pro-experimental')
