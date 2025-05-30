@@ -11,7 +11,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 import json
 
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 OPENAI_PROJECT_ID = "proj_bb1YRYbP5wd4P8quGgIrXOsd"
 OPENAI_ORG_ID = "org-adVrGVntY5ftjNinDvOf53Ku"
 
@@ -148,7 +148,7 @@ def simplify_math_expressions(text: str) -> str:
 def extract_lpp_from_text(text: str) -> Tuple[Optional[Dict], Optional[str]]:
     """Extract Linear Programming Problem (LPP) components."""
     prompt = f"""
-    Extract LPP components from:
+    You are an expert in optimization. Extract LPP components from the following text and return **only** a valid JSON dictionary with double-quoted property names, no markdown, no extra text, and no comments.
 
     ---
     {text}
@@ -166,7 +166,7 @@ def extract_lpp_from_text(text: str) -> Tuple[Optional[Dict], Optional[str]]:
        - Objective: "maximize", "minimize", or "mixed"
     3. Verify matrices five times for consistency.
 
-    Return a JSON dictionary:
+    Return a JSON dictionary exactly in this format:
     {{
         "c_max": [float, ...],
         "c_min": [float, ...],
@@ -187,17 +187,34 @@ def extract_lpp_from_text(text: str) -> Tuple[Optional[Dict], Optional[str]]:
             temperature=0.0
         )
         token_count.append(response.usage.total_tokens)
-        match = re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL)
+        # Stricter regex to match a single JSON object, handling nested structures
+        match = re.search(r'^\s*\{[\s\S]*?\}\s*$', response.choices[0].message.content, re.DOTALL)
         if match:
-            raw_dict = simplify_math_expressions(match.group(0))
-            parsed_dict = json.loads(raw_dict)
-            parsed_dict = ask_user_to_fill_missing_values(parsed_dict)
-            st.session_state.history.append(("assistant", parsed_dict))
-            return parsed_dict, None
-        return None, "Invalid LPP format."
+            raw_json = match.group(0)
+            try:
+                parsed_dict = json.loads(raw_json)
+                if not isinstance(parsed_dict, dict):
+                    logging.error(f"Parsed response is not a dictionary: {raw_json}")
+                    return None, "Parsed response is not a valid JSON dictionary."
+                # Validate required fields
+                required_fields = ["c_max", "c_min", "A_ub", "b_ub", "objective"]
+                missing_fields = [f for f in required_fields if f not in parsed_dict]
+                if missing_fields:
+                    logging.error(f"Missing required fields {missing_fields} in JSON: {raw_json}")
+                    return None, f"Missing required fields: {', '.join(missing_fields)}"
+                parsed_dict = ask_user_to_fill_missing_values(parsed_dict)
+                st.session_state.history.append(("assistant", parsed_dict))
+                return parsed_dict, None
+            except json.JSONDecodeError as json_err:
+                logging.error(f"JSON parsing error: {json_err}, Raw response: {response.choices[0].message.content}")
+                return None, f"Failed to parse JSON response: {json_err}"
+        else:
+            logging.error(f"No valid JSON object found in response: {response.choices[0].message.content}")
+            return None, "No valid JSON object found in API response."
     except Exception as e:
-        logging.error(f"Error parsing LPP: {e}")
+        logging.error(f"Error parsing LPP: {e}, Raw response: {response.choices[0].message.content if 'response' in locals() else 'No response'}")
         return None, f"Error parsing LPP: {e}"
+
 
 def extract_dynamic_programming_problem(problem_text: str) -> Optional[Dict]:
     """Extract Dynamic Programming components."""
@@ -927,17 +944,28 @@ def check_problem_completeness(problem_type: str, session_problem: Optional[Dict
             temperature=0.0
         )
         token_count.append(response.usage.total_tokens)
-        match = re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL)
+        # Improved regex to match JSON object, accounting for whitespace and potential surrounding text
+        match = re.search(r'\{[\s\S]*\}', response.choices[0].message.content, re.DOTALL)
         if match:
-            completeness_check = json.loads(match.group(0))
-            if not completeness_check.get("is_complete", False):
-                missing_fields = completeness_check.get("missing_fields", [])
-                error_message = f"Missing: {', '.join(missing_fields)}"
-                return completeness_check, error_message
-            return completeness_check, None
-        return None, "Failed to parse completeness."
+            raw_json = match.group(0)
+            try:
+                completeness_check = json.loads(raw_json)
+                if not isinstance(completeness_check, dict):
+                    logging.error(f"Parsed response is not a dictionary: {raw_json}")
+                    return None, "Parsed response is not a valid JSON dictionary."
+                if not completeness_check.get("is_complete", False):
+                    missing_fields = completeness_check.get("missing_fields", [])
+                    error_message = f"Missing: {', '.join(missing_fields)}"
+                    return completeness_check, error_message
+                return completeness_check, None
+            except json.JSONDecodeError as json_err:
+                logging.error(f"JSON parsing error: {json_err}, Raw response: {response.choices[0].message.content}")
+                return None, f"Failed to parse JSON response: {json_err}"
+        else:
+            logging.error(f"No JSON found in response: {response.choices[0].message.content}")
+            return None, "No valid JSON found in API response."
     except Exception as e:
-        logging.error(f"Error checking completeness: {e}")
+        logging.error(f"Error checking completeness: {e}, Raw response: {response.choices[0].message.content if 'response' in locals() else 'No response'}")
         return None, f"Error checking completeness: {e}"
 
 def handle_missing_information(problem_type: str, session_problem: Optional[Dict], user_input: str):
@@ -952,65 +980,12 @@ def handle_missing_information(problem_type: str, session_problem: Optional[Dict
         missing_fields = completeness_check.get("missing_fields", [])
         questions = [f"What value for '{field}'?" for field in missing_fields]
         st.session_state.history.append(("assistant", humanize_response("\n".join(questions))))
-        return
 
-def finance_chatbot(user_query: str) -> str:
-    """Finance chatbot."""
-    finance_keywords = [
-        "finance", "financial", "money", "cash", "currency", "budget", "income", "expense", "cost", "expenditure",
-        "revenue", "profit", "loss", "balance", "transaction", "fund", "capital", "interest", "rate", "inflation",
-        "deflation", "investment", "investing", "investor", "stock", "equity", "share", "bond", "fixed income",
-        "security", "portfolio", "diversification", "return", "ROI", "risk", "volatility", "alpha", "beta", "dividend",
-        "yield", "ETF", "mutual fund", "hedge fund", "index fund", "market cap", "price-to-earnings", "valuation",
-        "arbitrage", "derivatives", "options", "futures", "margin", "short selling", "IPO", "buyback", "blue-chip",
-        "growth stock", "value stock", "banking", "bank", "account", "credit", "debit", "loan", "mortgage", "debt",
-        "liability", "asset", "net worth", "equity financing", "debt financing", "financial statement", "balance sheet",
-        "income statement", "cash flow statement", "audit", "accounting", "bookkeeping", "tax", "taxation", "IRS",
-        "capital gains", "wealth", "financial planning", "retirement", "401(k)", "IRA", "pension", "annuity",
-        "social security", "savings", "saving", "emergency fund", "insurance", "premium", "claim", "underwriter",
-        "risk management", "real estate", "property", "REIT", "appraisal", "mortgage-backed securities", "money market",
-        "capital market", "stock market", "bond market", "forex", "exchange rate", "macroeconomics", "microeconomics",
-        "GDP", "CPI", "monetary policy", "fiscal policy", "interest rate", "central bank", "Federal Reserve",
-        "yield curve", "recession", "boom", "downturn", "credit rating", "FICO", "leverage", "liquidity", "solvency",
-        "financial modeling", "DCF", "NPV", "IRR", "working capital", "cost of capital", "EBITDA", "enterprise value",
-        "scenario analysis", "sensitivity analysis", "treasury", "controller", "CFO", "analyst", "wealth management",
-        "robo-advisor", "fintech", "compliance", "regulation", "SEC", "Basel III", "GAAP", "IFRS"
-
-    ]
-    is_finance_related = any(keyword in user_query.lower() for keyword in finance_keywords)
-    if not is_finance_related:
-        return "Error: Only finance queries allowed."
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a finance expert. Respond concisely to finance queries."
-                },
-                {"role": "user", "content": user_query}
-            ],
-            temperature=0.75
-        )
-        token_count.append(response.usage.total_tokens)
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logging.error(f"Error processing finance query: {e}")
-        return f"Error processing finance query: {e}"
 
 # --- Streamlit App ---
 def run_app():
-    st.title("🔢 Optimization & Finance Chatbot")
-    st.markdown("Describe an optimization problem or ask a finance question.")
-
-    # --- Finance Chatbot ---
-    st.subheader("💸 Finance Chatbot")
-    finance_query = st.chat_input("Ask a finance question...")
-    if finance_query:
-        with st.spinner("Processing finance query..."):
-            response = finance_chatbot(finance_query)
-            st.session_state.history.append(("user", finance_query))
-            st.session_state.history.append(("assistant", response))
+    st.title("🔢 Optimizer")
+    st.markdown("Describe an optimization problem ")
 
     # --- Optimization Interface ---
     st.subheader("📄 Optimization Input")
@@ -1023,6 +998,7 @@ def run_app():
             st.session_state.problem_type = ""
             st.session_state.user_input_history = []
             st.success("Excel data cleared.")
+            st.rerun()  # Rerun to update UI after clearing
 
     if uploaded_file and not st.session_state.excel_handled:
         try:
@@ -1054,6 +1030,8 @@ def run_app():
                         st.session_state.problem_type = "linear"
                         st.session_state.history.append(("assistant", "📋 **Excel: Linear Programming**"))
                         st.session_state.history.append(("assistant", human_response))
+                        st.session_state.excel_handled = True
+                        st.rerun()  # Rerun to display response immediately
 
             elif opt_types.get("nonlinear_programming"):
                 nlp_data, error = extract_nlp_components(user_input)
@@ -1064,13 +1042,17 @@ def run_app():
                     if err2:
                         st.error(f"❌ {err2}")
                     else:
-                        nlp_data['objective_function_original'] = re.search(r"lambda x: (.+)", nlp_data.get('objective_function', ''))[1] if nlp_data.get('objective_function') else "Objective"
+                        nlp_data['objective_function_original'] = \
+                        re.search(r"lambda x: (.+)", nlp_data.get('objective_function', ''))[1] if nlp_data.get(
+                            'objective_function') else "Objective"
                         formatted = format_nlp_solution(opt_val, opt_vars, nlp_data.get("objective_type"), nlp_data)
                         human_response = humanize_response(formatted, "nonlinear")
                         st.session_state.session_problem = nlp_data
                         st.session_state.problem_type = "nonlinear"
                         st.session_state.history.append(("assistant", "📊 **Excel: Nonlinear Programming**"))
                         st.session_state.history.append(("assistant", human_response))
+                        st.session_state.excel_handled = True
+                        st.rerun()  # Rerun to display response immediately
 
             elif opt_types.get("stochastic_programming"):
                 stochastic_dict = extract_stochastic_components(user_input)
@@ -1089,14 +1071,17 @@ def run_app():
                         for i in range(num_scenarios):
                             scen_name = stochastic_dict["scenarios"][i]["name"]
                             second_decisions = optimal_ys[i]
-                            decisions_text = ", ".join([f"{var}: {val:.2f}" for var, val in zip(second_var_names, second_decisions)])
-                            second_stage_details += f"\n**Scenario {i+1} ({scen_name}):** {decisions_text}"
+                            decisions_text = ", ".join(
+                                [f"{var}: {val:.2f}" for var, val in zip(second_var_names, second_decisions)])
+                            second_stage_details += f"\n**Scenario {i + 1} ({scen_name}):** {decisions_text}"
                         summary = f"**Optimal Value:** {optimal_value:.2f}\n\n**First-Stage:**\n{var_details}\n\n**Second-Stage:**{second_stage_details}"
                         human_response = humanize_response(summary, "stochastic")
                         st.session_state.session_problem = stochastic_dict
                         st.session_state.problem_type = "stochastic_programming"
                         st.session_state.history.append(("assistant", "🎲 **Excel: Stochastic**"))
                         st.session_state.history.append(("assistant", human_response))
+                        st.session_state.excel_handled = True
+                        st.rerun()  # Rerun to display response immediately
 
             elif opt_types.get("combinatorial_optimization"):
                 combinatorial_data = extract_combinatorial_data(user_input)
@@ -1113,6 +1098,8 @@ def run_app():
                         st.session_state.session_problem = combinatorial_data
                         st.session_state.history.append(("assistant", "🗺️ **Excel: TSP**"))
                         st.session_state.history.append(("assistant", human_response))
+                        st.session_state.excel_handled = True
+                        st.rerun()  # Rerun to display response immediately
 
                 elif combinatorial_data["problem_type"] == "assignment":
                     st.session_state.problem_type = "combinatorial_assignment"
@@ -1127,13 +1114,16 @@ def run_app():
                         st.session_state.session_problem = combinatorial_data
                         st.session_state.history.append(("assistant", "👷 **Excel: Assignment**"))
                         st.session_state.history.append(("assistant", human_response))
+                        st.session_state.excel_handled = True
+                        st.rerun()  # Rerun to display response immediately
 
                 elif combinatorial_data["problem_type"] == "knapsack":
                     st.session_state.problem_type = "combinatorial_knapsack"
                     values = combinatorial_data["data"].get("values", [])
                     weights = combinatorial_data["data"].get("weights", [])
                     capacity = combinatorial_data["data"].get("capacity")
-                    item_names = combinatorial_data["data"].get("item_names", [f"Item {i+1}" for i in range(len(values))])
+                    item_names = combinatorial_data["data"].get("item_names",
+                                                                [f"Item {i + 1}" for i in range(len(values))])
                     optimal_value, chosen_items = solve_knapsack(values, weights, capacity, item_names)
                     formatted = f"Optimal Value: {optimal_value}\nItems: {chosen_items}"
                     human_response = humanize_response(formatted, "knapsack")
@@ -1142,6 +1132,8 @@ def run_app():
                     st.session_state.history.append(("assistant", human_response))
                     st.success(f"🎯 Value: {optimal_value}")
                     display_knapsack_solution(values, weights, item_names, chosen_items)
+                    st.session_state.excel_handled = True
+                    st.rerun()  # Rerun to display response immediately
 
                 elif combinatorial_data["problem_type"] == "set_covering":
                     st.session_state.problem_type = "set_covering"
@@ -1157,15 +1149,19 @@ def run_app():
                         st.session_state.session_problem = combinatorial_data
                         st.session_state.history.append(("assistant", "🛡️ **Set Covering**"))
                         st.session_state.history.append(("assistant", human_response))
+                        st.session_state.excel_handled = True
+                        st.rerun()  # Rerun to display response immediately
 
                 else:
                     st.warning(f"⚠️ Unrecognized: {combinatorial_data['error']}")
-
-            st.session_state.excel_handled = True
+                    st.session_state.excel_handled = True
+                    st.rerun()  # Rerun to display warning
 
         except Exception as e:
             logging.error(f"Error processing Excel: {e}")
             st.error(f"❌ Error processing Excel: {e}")
+            st.session_state.excel_handled = True
+            st.rerun()  # Rerun to display error
 
     user_input = st.chat_input("Enter optimization problem or modification...")
     if user_input:
@@ -1178,17 +1174,25 @@ def run_app():
                 opt_types = detect_optimization_type(latest_input)
                 if not any(opt_types.values()):
                     handle_missing_information("", st.session_state.session_problem, latest_input)
+                    st.rerun()  # Rerun to display missing information prompt
                 else:
                     st.session_state.problem_type = next(k for k, v in opt_types.items() if v)
-                    completeness_check, error = check_problem_completeness(st.session_state.problem_type, st.session_state.session_problem, latest_input)
+                    completeness_check, error = check_problem_completeness(st.session_state.problem_type,
+                                                                           st.session_state.session_problem,
+                                                                           latest_input)
                     if error:
-                        handle_missing_information(st.session_state.problem_type, st.session_state.session_problem, latest_input)
+                        handle_missing_information(st.session_state.problem_type, st.session_state.session_problem,
+                                                   latest_input)
+                        st.rerun()  # Rerun to display missing information prompt
                     else:
                         st.success("✅ Problem complete!")
                         process_new_problem(latest_input, user_input, opt_types)
+                        st.rerun()  # Rerun to display response immediately
 
             else:
                 process_followup(latest_input, user_input, st.session_state.session_problem)
+                st.rerun()  # Rerun to display follow-up response immediately
+
 
 def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str, bool]):
     """Handle new optimization problems."""
@@ -1199,10 +1203,12 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
         lpp_data, error = extract_lpp_from_text(user_input)
         if error:
             st.session_state.history.append(("assistant", f"❌ {error}"))
+            st.rerun()  # Rerun to display error
         else:
             err2, opt_val, opt_vars = solve_lpp(lpp_data)
             if err2:
                 st.session_state.history.append(("assistant", f"❌ {err2}"))
+                st.rerun()  # Rerun to display error
             else:
                 formatted = format_solution(opt_val, opt_vars, lpp_data.get("objective"), lpp_data)
                 human_response = humanize_response(formatted)
@@ -1210,16 +1216,19 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
                 st.session_state.history.append(("assistant", human_response))
                 true_types = [k.replace("_", " ").title() for k, v in opt_types.items() if v]
                 st.session_state.history.append(("assistant", f"📚 **Types:** {', '.join(true_types)}"))
+                st.rerun()  # Rerun to display response
 
     elif opt_types.get("nonlinear_programming"):
         st.session_state.problem_type = "nonlinear"
         nlp_data, error = extract_nlp_components(latest_input)
         if error:
             st.session_state.history.append(("assistant", f"❌ {error}"))
+            st.rerun()  # Rerun to display error
         else:
             err2, opt_val, opt_vars = solve_nlp(nlp_data)
             if err2:
                 st.session_state.history.append(("assistant", f"❌ {err2}"))
+                st.rerun()  # Rerun to display error
             else:
                 nlp_data['objective_function_original'] = re.search(r"lambda x: (.+)", nlp_data.get('objective_function', ''))[1] if nlp_data.get('objective_function') else "Objective"
                 formatted = format_nlp_solution(opt_val, opt_vars, nlp_data.get("objective_type"), nlp_data)
@@ -1228,6 +1237,7 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
                 st.session_state.history.append(("assistant", human_response))
                 true_types = [k.replace('_', ' ').title() for k, v in opt_types.items() if v]
                 st.session_state.history.append(("assistant", f"📚 Types: {', '.join(true_types)}"))
+                st.rerun()  # Rerun to display response
 
     elif opt_types.get("combinatorial_optimization"):
         combinatorial_data = extract_combinatorial_data(latest_input)
@@ -1238,11 +1248,13 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
             result = solve_tsp(distance_matrix)
             if isinstance(result[0], str):
                 st.session_state.history.append(("assistant", f"❌ {result[0]}"))
+                st.rerun()  # Rerun to display error
             else:
                 distance, path = result
                 formatted = format_tsp_solution(distance, path)
                 human_response = humanize_response(formatted, "TSP")
                 st.session_state.history.append(("assistant", human_response))
+                st.rerun()  # Rerun to display response
 
         elif combinatorial_data["problem_type"] == "assignment":
             st.session_state.problem_type = "assignment"
@@ -1250,11 +1262,13 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
             result = solve_assignment_problem(cost_matrix)
             if isinstance(result[0], str):
                 st.session_state.history.append(("assistant", f"❌ {result[0]}"))
+                st.rerun()  # Rerun to display error
             else:
                 cost, assignment = result
                 formatted = format_assignment_solution(cost, assignment)
                 human_response = humanize_response(formatted, "assignment")
                 st.session_state.history.append(("assistant", human_response))
+                st.rerun()  # Rerun to display response
 
         elif combinatorial_data["problem_type"] == "knapsack":
             st.session_state.problem_type = "knapsack"
@@ -1269,9 +1283,11 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
                 st.session_state.history.append(("assistant", human_response))
                 st.success(f"Value: {optimal_value}")
                 display_knapsack_solution(values, weights, item_names, chosen_items)
+                st.rerun()  # Rerun to display response
             except Exception as e:
                 logging.error(f"Knapsack error: {e}")
                 st.session_state.history.append(("assistant", f"❌ Knapsack error: {e}"))
+                st.rerun()  # Rerun to display error
 
         elif combinatorial_data["problem_type"] == "set_covering":
             st.session_state.problem_type = "set_covering"
@@ -1279,26 +1295,31 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
             universe = combinatorial_data["data"].get("universe", [])
             if not sets or not universe:
                 st.session_state.history.append(("assistant", "❌ Set Covering requires sets and universe."))
+                st.rerun()  # Rerun to display error
             else:
                 result = solve_set_covering(sets, universe)
                 if isinstance(result[0], str):
                     st.session_state.history.append(("assistant", f"❌ {result[0]}"))
+                    st.rerun()  # Rerun to display error
                 else:
                     cover_indices, cost = result
                     formatted = format_set_covering_solution(cover_indices, cost, sets)
                     human_response = humanize_response(formatted, "set covering")
                     st.session_state.session_problem = combinatorial_data
                     st.session_state.history.append(("assistant", human_response))
+                    st.rerun()  # Rerun to display response
 
     elif opt_types.get("stochastic_programming"):
         st.session_state.problem_type = "stochastic_programming"
         stochastic_data = extract_stochastic_components(latest_input)
         if "error" in stochastic_data:
             st.session_state.history.append(("assistant", f"❌ {stochastic_data['error']}"))
+            st.rerun()  # Rerun to display error
         else:
             err2, optimal_value, optimal_x, optimal_ys = solve_two_stage_stochastic(stochastic_data)
             if err2:
                 st.session_state.history.append(("assistant", f"❌ {err2}"))
+                st.rerun()  # Rerun to display error
             else:
                 var_names = stochastic_data["first_stage_variables"]
                 second_var_names = stochastic_data["second_stage_variables"]
@@ -1316,6 +1337,7 @@ def process_new_problem(latest_input: str, user_input: str, opt_types: Dict[str,
                 st.session_state.history.append(("assistant", human_response))
                 true_types = [k.replace('_', ' ').title() for k, v in opt_types.items() if v]
                 st.session_state.history.append(("assistant", f"📚 **Types:** {', '.join(true_types)}"))
+                st.rerun()  # Rerun to display response
 
 def process_followup(latest_input: str, user_input: str, session_problem: Optional[Dict]):
     """Handle follow-up modifications."""
@@ -1326,34 +1348,41 @@ def process_followup(latest_input: str, user_input: str, session_problem: Option
             modified_lpp, error = modify_lpp(session_problem, user_input)
             if error:
                 st.session_state.history.append(("assistant", f"❌ {error}"))
+                st.rerun()  # Rerun to display error
             else:
                 err2, opt_val, opt_vars = solve_lpp(modified_lpp)
                 if err2:
                     st.session_state.history.append(("assistant", f"❌ {err2}"))
+                    st.rerun()  # Rerun to display error
                 else:
                     formatted = format_solution(opt_val, opt_vars, modified_lpp.get("objective"), modified_lpp)
                     human_response = humanize_response(formatted, "linear")
                     st.session_state.session_problem = modified_lpp
                     st.session_state.history.append(("assistant", human_response))
+                    st.rerun()  # Rerun to display response
 
         elif st.session_state.problem_type == "nonlinear":
             modified_nlp, error = modify_nlp(session_problem, user_input)
             if error:
                 st.session_state.history.append(("assistant", f"❌ {error}"))
+                st.rerun()  # Rerun to display error
             else:
                 err2, opt_val, opt_vars = solve_nlp(modified_nlp)
                 if err2:
                     st.session_state.history.append(("assistant", f"❌ {err2}"))
+                    st.rerun()  # Rerun to display error
                 else:
                     formatted = format_nlp_solution(opt_val, opt_vars, modified_nlp.get("objective_type", "minimize"), modified_nlp)
                     human_response = humanize_response(formatted, "nonlinear")
                     st.session_state.session_problem = modified_nlp
                     st.session_state.history.append(("assistant", human_response))
+                    st.rerun()  # Rerun to display response
 
         elif st.session_state.problem_type == "knapsack":
             modified_combinatorial, error = modify_combinatorial(session_problem, user_input)
             if error or not modified_combinatorial:
                 st.session_state.history.append(("assistant", f"❌ {error or 'No modified problem'}"))
+                st.rerun()  # Rerun to display error
             else:
                 values = modified_combinatorial["data"].get("values", [])
                 weights = modified_combinatorial["data"].get("weights", [])
@@ -1367,70 +1396,84 @@ def process_followup(latest_input: str, user_input: str, session_problem: Option
                     st.session_state.history.append(("assistant", human_response))
                     st.success(f"🎯 Value: {optimal_value}")
                     display_knapsack_solution(values, weights, item_names, chosen_items)
+                    st.rerun()  # Rerun to display response
                 except Exception as e:
                     logging.error(f"Knapsack error: {e}")
                     st.session_state.history.append(("assistant", f"❌ Knapsack error: {e}"))
+                    st.rerun()  # Rerun to display error
 
         elif st.session_state.problem_type == "assignment":
             modified_combinatorial, error = modify_combinatorial(session_problem, user_input)
             if error or not modified_combinatorial:
                 st.session_state.history.append(("assistant", f"❌ {error or 'No modified assignment'}"))
+                st.rerun()  # Rerun to display error
             else:
                 cost_matrix = np.array(modified_combinatorial["data"].get("cost_matrix", []))
                 result = solve_assignment_problem(cost_matrix)
                 if isinstance(result[0], str):
                     st.session_state.history.append(("assistant", f"❌ {result[0]}"))
+                    st.rerun()  # Rerun to display error
                 else:
                     cost, assignment = result
                     formatted = format_assignment_solution(cost, assignment)
                     human_response = humanize_response(formatted, "assignment")
                     st.session_state.session_problem = modified_combinatorial
                     st.session_state.history.append(("assistant", human_response))
+                    st.rerun()  # Rerun to display response
 
         elif st.session_state.problem_type == "tsp":
             modified_combinatorial, error = modify_combinatorial(session_problem, user_input)
             if error or not modified_combinatorial:
                 st.session_state.history.append(("assistant", f"❌ {error or 'No modified TSP'}"))
+                st.rerun()  # Rerun to display error
             else:
                 distance_matrix = np.array(modified_combinatorial["data"].get("distance_matrix", []))
                 result = solve_tsp(distance_matrix)
                 if isinstance(result[0], str):
                     st.session_state.history.append(("assistant", f"❌ {result[0]}"))
+                    st.rerun()  # Rerun to display error
                 else:
                     distance, path = result
                     formatted = format_tsp_solution(distance, path)
                     human_response = humanize_response(formatted, "TSP")
                     st.session_state.session_problem = modified_combinatorial
                     st.session_state.history.append(("assistant", human_response))
+                    st.rerun()  # Rerun to display response
 
         elif st.session_state.problem_type == "set_covering":
             modified_combinatorial, error = modify_combinatorial(session_problem, user_input)
             if error or not modified_combinatorial:
                 st.session_state.history.append(("assistant", f"❌ {error or 'No modified set covering'}"))
+                st.rerun()  # Rerun to display error
             else:
                 sets = modified_combinatorial["data"].get("sets", [])
                 universe = modified_combinatorial["data"].get("universe", [])
                 if not sets or not universe:
                     st.session_state.history.append(("assistant", "❌ Set Covering requires sets/universe."))
+                    st.rerun()  # Rerun to display error
                 else:
                     result = solve_set_covering(sets, universe)
                     if isinstance(result[0], str):
                         st.session_state.history.append(("assistant", f"❌ {result[0]}"))
+                        st.rerun()  # Rerun to display error
                     else:
                         cover_indices, cost = result
                         formatted = format_set_covering_solution(cover_indices, cost, sets)
                         human_response = humanize_response(formatted, "set covering")
                         st.session_state.session_problem = modified_combinatorial
                         st.session_state.history.append(("assistant", human_response))
+                        st.rerun()  # Rerun to display response
 
         elif st.session_state.problem_type == "stochastic_programming":
             stochastic_data = extract_stochastic_components(latest_input)
             if "error" in stochastic_data:
                 st.session_state.history.append(("assistant", f"❌ {stochastic_data['error']}"))
+                st.rerun()  # Rerun to display error
             else:
                 err2, optimal_value, optimal_x, optimal_ys = solve_two_stage_stochastic(stochastic_data)
                 if err2:
                     st.session_state.history.append(("assistant", f"❌ {err2}"))
+                    st.rerun()  # Rerun to display error
                 else:
                     var_names = stochastic_data["first_stage_variables"]
                     second_var_names = stochastic_data["second_stage_variables"]
@@ -1446,13 +1489,18 @@ def process_followup(latest_input: str, user_input: str, session_problem: Option
                     human_response = humanize_response(summary, "stochastic")
                     st.session_state.session_problem = stochastic_data
                     st.session_state.history.append(("assistant", human_response))
+                    st.rerun()  # Rerun to display response
 
         else:
             st.session_state.history.append(("assistant", "❌ Unknown operation."))
+            st.rerun()  # Rerun to display error
 
     except Exception as e:
         logging.error(f"Error in follow-up: {e}")
         st.session_state.history.append(("assistant", f"❌ Error in follow-up: {e}"))
+        st.rerun()  # Rerun to display error
+
+
 
 # --- Display Chat History ---
 for sender, message in st.session_state.history:
